@@ -1,0 +1,9 @@
+/build*/
+/.build-deps/
+/.cache/
+/.vscode/
+/.idea/
+*.user
+*.wav
+*.aiff
+.DS_Store

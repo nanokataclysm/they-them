@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "VocalEngine.h"
+#include "Presets.h"
 
 #include <atomic>
 
@@ -45,12 +46,20 @@ public:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     Parameters currentParameters() const noexcept;
     double latencyMilliseconds() const noexcept;
+    MeterReadings takeMeterReadings() noexcept { return meters.take(); }
+
+    // Preset operations run on the message/setup thread, never in processBlock.
+    void loadFactoryPreset (int index);
+    int matchingFactoryPreset() const noexcept;
+    juce::Result savePresetToFile (const juce::File&);
+    juce::Result loadPresetFromFile (const juce::File&);
 
 private:
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&, bool hostBypass) noexcept;
 
     juce::AudioProcessorValueTreeState parameters;
     VocalEngine engine;
+    MeterBridge meters;
 
     // Resolve these once, never perform string lookups on the audio thread.
     std::atomic<float>* const pitch;

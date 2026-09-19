@@ -9,6 +9,26 @@ namespace theythem
 {
 namespace
 {
+constexpr std::array<const char*, 10> parameterIds {
+    "pitch", "formant", "character", "mix", "input", "output",
+    "highPass", "compressor", "transform", "bypass"
+};
+
+bool parseValue (const juce::var& source, float& value)
+{
+    const auto text = source.toString().trim().toStdString();
+    const auto parsed = std::from_chars (text.data(), text.data() + text.size(), value);
+    return parsed.ec == std::errc() && parsed.ptr == text.data() + text.size() && std::isfinite (value);
+}
+
+void notifyParameter (juce::AudioProcessorValueTreeState& state, const char* id, float value)
+{
+    auto* parameter = state.getParameter (id);
+    parameter->beginChangeGesture();
+    parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+    parameter->endChangeGesture();
+}
+
 juce::AudioParameterFloatAttributes units (const juce::String& label)
 {
     return juce::AudioParameterFloatAttributes().withLabel (label)
@@ -74,10 +94,11 @@ void TheyThemAudioProcessor::prepareToPlay (double sampleRate, int maximumBlockS
     preparedSampleRate.store (engine.sampleRate(), std::memory_order_relaxed);
     reportedLatency.store (engine.latencySamples(), std::memory_order_relaxed);
     setLatencySamples (engine.latencySamples());
+    meters.reset();
 }
 
-void TheyThemAudioProcessor::releaseResources() { engine.reset(); }
-void TheyThemAudioProcessor::reset() { engine.reset(); }
+void TheyThemAudioProcessor::releaseResources() { reset(); }
+void TheyThemAudioProcessor::reset() { engine.reset(); meters.reset(); }
 
 bool TheyThemAudioProcessor::isBusesLayoutSupported (const BusesLayout& layout) const
 {
@@ -121,8 +142,13 @@ void TheyThemAudioProcessor::process (juce::AudioBuffer<float>& buffer, juce::Mi
     auto settings = currentParameters();
     settings.bypassed = settings.bypassed || hostBypass;
     engine.process (buffer.getArrayOfWritePointers(), processingChannels, buffer.getNumSamples(), settings);
+    auto reading = engine.meterReadings();
     if (getTotalNumInputChannels() == 1 && outputChannels == 2)
+    {
         buffer.copyFrom (1, 0, buffer, 0, 0, buffer.getNumSamples());
+        reading.output[1] = reading.output[0];
+    }
+    meters.push (reading);
 }
 
 void TheyThemAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -146,6 +172,93 @@ double TheyThemAudioProcessor::latencyMilliseconds() const noexcept
 juce::AudioProcessorEditor* TheyThemAudioProcessor::createEditor()
 {
     return new TheyThemAudioProcessorEditor (*this);
+}
+
+void TheyThemAudioProcessor::loadFactoryPreset (int index)
+{
+    if (index < 0 || index >= static_cast<int> (factoryPresets.size()))
+        return;
+    const auto& preset = factoryPresets[static_cast<size_t> (index)];
+    notifyParameter (parameters, "pitch", preset.pitch);
+    notifyParameter (parameters, "formant", preset.formant);
+    notifyParameter (parameters, "character", preset.character);
+    notifyParameter (parameters, "mix", preset.mix);
+    notifyParameter (parameters, "highPass", preset.highPass ? 1.0f : 0.0f);
+    notifyParameter (parameters, "compressor", preset.compressor ? 1.0f : 0.0f);
+    notifyParameter (parameters, "transform", preset.transform ? 1.0f : 0.0f);
+}
+
+int TheyThemAudioProcessor::matchingFactoryPreset() const noexcept
+{
+    const auto current = currentParameters();
+    const auto same = [] (float a, float b) { return std::abs (a - b) < 0.0001f; };
+    for (size_t i = 0; i < factoryPresets.size(); ++i)
+    {
+        const auto& preset = factoryPresets[i];
+        if (same (current.pitchSemitones, preset.pitch) && same (current.formantSemitones, preset.formant)
+            && same (current.character, preset.character) && same (current.mix, preset.mix)
+            && current.highPassEnabled == preset.highPass && current.compressorEnabled == preset.compressor
+            && current.transformEnabled == preset.transform)
+            return static_cast<int> (i);
+    }
+    return -1;
+}
+
+juce::Result TheyThemAudioProcessor::savePresetToFile (const juce::File& file)
+{
+    auto xml = parameters.copyState().createXml();
+    if (xml == nullptr)
+        return juce::Result::fail ("Could not read the current settings.");
+    xml->setAttribute ("presetVersion", 1);
+    // Check the write and flush before replacing a saved voice. In particular,
+    // a full disk must not replace a valid preset with a truncated file.
+    juce::TemporaryFile temporary (file);
+    {
+        juce::FileOutputStream stream (temporary.getFile());
+        if (! stream.openedOk() || ! stream.writeText (xml->toString(), false, false, "\n"))
+            return juce::Result::fail ("Could not write this preset. Choose a writable folder.");
+        stream.flush();
+        if (stream.getStatus().failed())
+            return juce::Result::fail ("Could not finish writing this preset. Check available disk space.");
+    }
+    return temporary.overwriteTargetFileWithTemporary() ? juce::Result::ok()
+        : juce::Result::fail ("Could not replace this preset. Choose a writable folder.");
+}
+
+juce::Result TheyThemAudioProcessor::loadPresetFromFile (const juce::File& file)
+{
+    constexpr int maximumBytes = 1024 * 1024;
+    auto stream = file.createInputStream();
+    if (stream == nullptr || stream->getTotalLength() <= 0 || stream->getTotalLength() > maximumBytes)
+        return juce::Result::fail ("Choose a they-them preset smaller than 1 MB.");
+    juce::MemoryBlock contents;
+    stream->readIntoMemoryBlock (contents, maximumBytes + 1);
+    if (contents.getSize() > maximumBytes)
+        return juce::Result::fail ("This preset is too large.");
+    const auto xml = juce::parseXML (contents.toString());
+    if (xml == nullptr || ! xml->hasTagName ("TheyThemParameters") || xml->getStringAttribute ("presetVersion") != "1")
+        return juce::Result::fail ("This is not a supported they-them preset.");
+
+    const auto incoming = juce::ValueTree::fromXml (*xml);
+    std::array<float, parameterIds.size()> values {};
+    if (incoming.getNumChildren() != static_cast<int> (parameterIds.size()))
+        return juce::Result::fail ("The preset is incomplete. Your settings have been kept.");
+    // Validate the entire file before touching any parameter. Host session state
+    // remains tolerant of older/partial data; user preset files are all-or-nothing.
+    for (size_t i = 0; i < parameterIds.size(); ++i)
+    {
+        const auto child = incoming.getChildWithProperty ("id", parameterIds[i]);
+        const auto& range = parameters.getParameter (parameterIds[i])->getNormalisableRange();
+        auto& value = values[i];
+        if (! child.hasType ("PARAM") || ! child.hasProperty ("value")
+            || ! parseValue (child.getProperty ("value"), value)
+            || value < range.start || value > range.end
+            || std::abs (range.snapToLegalValue (value) - value) > 0.0001f)
+            return juce::Result::fail ("The preset contains invalid settings. Your settings have been kept.");
+    }
+    for (size_t i = 0; i < parameterIds.size(); ++i)
+        notifyParameter (parameters, parameterIds[i], values[i]);
+    return juce::Result::ok();
 }
 
 void TheyThemAudioProcessor::getStateInformation (juce::MemoryBlock& destination)
@@ -173,10 +286,8 @@ void TheyThemAudioProcessor::setStateInformation (const void* data, int sizeInBy
         if (! source.isValid() || parameter == nullptr || ! source.hasProperty ("value"))
             continue;
 
-        const auto text = source.getProperty ("value").toString().trim().toStdString();
         float value = 0.0f;
-        const auto parsed = std::from_chars (text.data(), text.data() + text.size(), value);
-        if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() || ! std::isfinite (value))
+        if (! parseValue (source.getProperty ("value"), value))
             continue;
 
         const auto& range = parameter->getNormalisableRange();

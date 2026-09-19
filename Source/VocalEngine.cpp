@@ -104,6 +104,7 @@ struct VocalEngine::Impl
     float controlPole = 0.0f;
     HighPass highPass;
     Compressor compressor;
+    MeterReadings meters;
 
     SmoothValue pitch, formant, character, inputGain, outputGain, mix;
     SmoothValue highPassAmount, compressorAmount, transformAmount, bypassAmount;
@@ -144,6 +145,7 @@ struct VocalEngine::Impl
         std::fill(delay.begin(), delay.end(), 0.0f);
         delayPosition = 0;
         initialisedControls = false;
+        meters = {};
         for (int channel = 0; channel < maximumChannels; ++channel)
         {
             input[channel].fill(0.0f);
@@ -185,6 +187,8 @@ struct VocalEngine::Impl
 
     void process(float* const* audio, int activeChannels, int samples, const Parameters& parameters) noexcept
     {
+        meters = {};
+        float minimumCompressionGain = 1.0f;
         setTargets(parameters);
         for (int offset = 0; offset < samples;)
         {
@@ -215,6 +219,9 @@ struct VocalEngine::Impl
                     const float raw = channel < activeChannels && audio[channel] != nullptr
                                         ? bounded(audio[channel][offset + sample], -8.0f, 8.0f, 0.0f) : 0.0f;
                     const float gained = raw * inGain;
+                    const float meteredInput = gained + bypassAmounts[sample] * (raw - gained);
+                    meters.input[static_cast<size_t>(channel)] = std::max(
+                        meters.input[static_cast<size_t>(channel)], std::abs(meteredInput));
                     const float filtered = highPass.process(gained, channel);
                     const float utility = gained + hpAmount * (filtered - gained);
                     input[channel][sample] = utility;
@@ -224,6 +231,8 @@ struct VocalEngine::Impl
                 }
 
                 const float compressionGain = 1.0f + compAmount * (compressor.gain(peak) - 1.0f);
+                minimumCompressionGain = std::min(minimumCompressionGain,
+                    compressionGain + bypassAmounts[sample] * (1.0f - compressionGain));
                 for (int channel = 0; channel < channels; ++channel)
                 {
                     input[channel][sample] *= compressionGain;
@@ -248,6 +257,8 @@ struct VocalEngine::Impl
                     const float dry = delayedDry[channel][sample];
                     const float processed = (dry + mixAmounts[sample] * (effectiveWet - dry)) * outputGains[sample];
                     const float output = processed + bypassAmounts[sample] * (delayedRaw[channel][sample] - processed);
+                    meters.output[static_cast<size_t>(channel)] = std::max(
+                        meters.output[static_cast<size_t>(channel)], std::abs(clean(output)));
                     // Last-resort sample protection, not a lookahead limiter or a
                     // guarantee against acoustic microphone/speaker feedback.
                     audio[channel][offset + sample] = bounded(clean(output), -1.0f, 1.0f, 0.0f);
@@ -255,6 +266,9 @@ struct VocalEngine::Impl
             }
             offset += count;
         }
+        meters.gainReductionDb = -20.0f * std::log10(std::max(minimumCompressionGain, 1.0e-6f));
+        meters.hasAudio = true;
+        meters.bypassed = parameters.bypassed;
     }
 };
 
@@ -291,6 +305,7 @@ void VocalEngine::process(float* const* audio, int numChannels, int numSamples,
 
 int VocalEngine::latencySamples() const noexcept { return impl ? impl->latency : 0; }
 double VocalEngine::sampleRate() const noexcept { return impl ? impl->rate : 0.0; }
+MeterReadings VocalEngine::meterReadings() const noexcept { return impl ? impl->meters : MeterReadings {}; }
 
 Parameters VocalEngine::sanitise(Parameters parameters) noexcept
 {

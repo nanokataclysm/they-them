@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
-project(TheyThem VERSION 0.1.0 LANGUAGES C CXX)
+project(TheyThem VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 
 option(THEY_THEM_BUILD_PLUGIN "Build JUCE VST3 and standalone targets" ON)
+option(THEY_THEM_TEST_EDITOR "Include editor smoke tests in CTest (requires a graphical session)" OFF)
 set(THEY_THEM_JUCE_SOURCE_DIR "" CACHE PATH "Optional existing JUCE 9.0.2 source checkout")
 
 add_library(TheyThemDsp STATIC Source/VocalEngine.cpp)
@@ -72,12 +73,19 @@ if(THEY_THEM_BUILD_PLUGIN)
 
     if(BUILD_TESTING)
         add_executable(TheyThemPluginTests tests/PluginTests.cpp)
-        target_link_libraries(TheyThemPluginTests PRIVATE TheyThem)
-        target_include_directories(TheyThemPluginTests PRIVATE
-            Source $<TARGET_PROPERTY:TheyThem,INCLUDE_DIRECTORIES>)
-        target_compile_definitions(TheyThemPluginTests PRIVATE
-            $<TARGET_PROPERTY:TheyThem,COMPILE_DEFINITIONS>)
+        add_executable(TheyThemEditorTests tests/EditorTests.cpp)
+        foreach(test_target TheyThemPluginTests TheyThemEditorTests)
+            target_link_libraries(${test_target} PRIVATE TheyThem)
+            target_include_directories(${test_target} PRIVATE
+                Source $<TARGET_PROPERTY:TheyThem,INCLUDE_DIRECTORIES>)
+            target_compile_definitions(${test_target} PRIVATE
+                $<TARGET_PROPERTY:TheyThem,COMPILE_DEFINITIONS>)
+        endforeach()
         add_test(NAME plugin_contract COMMAND TheyThemPluginTests)
         set_tests_properties(plugin_contract PROPERTIES TIMEOUT 60)
+        if(THEY_THEM_TEST_EDITOR)
+            add_test(NAME editor COMMAND TheyThemEditorTests "${CMAKE_BINARY_DIR}/qa")
+            set_tests_properties(editor PROPERTIES TIMEOUT 30)
+        endif()
     endif()
 endif()

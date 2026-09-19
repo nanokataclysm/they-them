@@ -1,10 +1,26 @@
 # they-them
 
-A small, original C++ vocal effect for live experiments and recording. Builds a
-**VST3 audio effect** and a **standalone JUCE application** on Ubuntu. This is an
-MVP, not a finished voice-conversion product or a recreation of a commercial
-plugin. No AI, cloud inference, models, accounts, telemetry, MIDI functionality,
+A C++ vocal effect for live experiments and recording. Builds a
+**VST3 audio effect** and a **standalone JUCE application** on Ubuntu.
+Version **0.2.0** adds a resizable editor, eight factory voices, portable preset
+files, stereo peak meters, and compression metering to the original pitch/formant
+engine. No AI, cloud inference, models, accounts, telemetry, MIDI functionality,
 or licensing service is used by the application.
+
+![they-them editor with synthetic test audio](docs/images/editor.png)
+
+The screenshot uses synthetic test audio. See [0.2.0 verification](docs/verification-0.2.0.md)
+for the build, host, and editor checks and remaining listening work.
+
+## Project status
+
+Version 0.2.0 is a Linux development build with automated DSP, processor, preset,
+metering, and editor checks. Live microphone/headphone acceptance remains pending;
+the measured offline timings do not establish glitch-free live operation.
+
+This repository contains source, tests, and documentation. Build outputs and raw
+QA logs stay in ignored local directories. The verification pages are dated local
+reports; their `build-next/qa/` evidence paths are not included in a fresh clone.
 
 ## Build on Ubuntu
 
@@ -54,6 +70,7 @@ Build just one format with `--target TheyThem_Standalone` or
 - Standalone: `build/TheyThem_artefacts/Release/Standalone/they-them`
 - DSP test/measurement executable: `build/TheyThemDspTests`
 - JUCE processor tests: `build/TheyThemPluginTests`
+- Editor smoke/screenshot tool: `build/TheyThemEditorTests`
 
 ## First microphone test
 
@@ -76,6 +93,55 @@ set it to zero to evaluate pitch compensation with a neutral formant setting.
 Stereo inputs remain separate. A mono input is transformed once and sent to both
 stereo outputs, avoiding a duplicate spectral processing pass.
 For a single microphone, enable only that input channel in the device dialog.
+
+## Editor and presets
+
+- Drag the Pitch and Formant knobs, or click their values to type an exact amount.
+  Character, Dry / Wet, and trim controls work the same way. Double-click a control
+  to restore its original default (Pitch returns to **+12 st**, not zero).
+- Resize using the lower-right corner or the host window. The editor supports
+  800 × 620 through 1440 × 1000; its initial size is 960 × 680.
+- Browse the factory menu or use **< / >**. Factory voices preserve **input trim,
+  output trim, and global bypass**. The menu shows **Custom settings** when voice
+  controls no longer match a factory preset, including changes made by host automation.
+- **Save** writes all ten controls to a readable `.ttvoice` preset. **Load** restores
+  all ten controls, including trims and bypass. Files are portable between instances;
+  no account or plugin-managed preset directory is needed. Use the `.ttvoice` extension.
+- Invalid, incomplete, out-of-range, or unsupported preset files leave all controls
+  unchanged. Saves use a temporary file and check the write before replacing an
+  existing preset. File selection is asynchronous and cancels when the editor closes.
+- Normal DAW session recall still uses the original parameter IDs and state root.
+  Version 0.1.0 sessions remain compatible. Factory voices live in the editor menu;
+  the plugin's host program count remains one.
+
+| Factory voice | Pitch | Formant | Character | Wet |
+| --- | ---: | ---: | ---: | ---: |
+| Octave Bloom (original default) | +12 st | 0 st | 65% | 100% |
+| Clean Slate | 0 st | 0 st | 0% | 100% |
+| Soft Lift | +3 st | +1 st | 20% | 100% |
+| Airlight | +5 st | +2 st | 35% | 100% |
+| Low Tide | −4 st | −2 st | 0% | 100% |
+| Deep Space | −12 st | −4 st | 0% | 100% |
+| Small Hours | +7 st | +5 st | 40% | 100% |
+| Parallel Glow | +12 st | +2 st | 35% | 35% |
+
+All factory voices enable Low cut, Compress, and Transform. Clean Slate still runs
+the spectral transform; use Transform off to hear only the utility effects.
+
+### Read the meters
+
+The two bars show the left and right channels. **Input** measures after input trim
+and before Low cut/Compress. **Output** measures after mixing and output trim,
+**before** the safety clamp, so an overload remains visible even when the returned
+audio is bounded. In bypass, the meters follow the original input and delayed output.
+For mono-to-stereo routing the second input bar is empty and both output bars match.
+
+Meter peaks hold for one second, then fall smoothly. **CLIP** means the signal
+reached or exceeded 0 dBFS and stays lit for two seconds; click a meter to clear its
+peak hold and clip indication. These are sample-peak meters, not loudness or true-peak
+measurements. Compression displays the compressor's peak gain reduction. The footer
+distinguishes processing, bypass, and idle audio and shows DSP latency separately
+from device latency.
 
 ## Load in Ardour
 
@@ -138,7 +204,8 @@ shows the corresponding **17.415 ms at 44.1 kHz / 16.000 ms at 48 kHz**. Neutral
 transform impulse-peak measurements match that delay. This is a spectral effect:
 small impulse energy arrives before the peak, and the neutral impulse has about
 0.88% peak-amplitude ripple. Dry/wet alignment uses the measured peak delay.
-See [current verification](docs/verification.md) for measurements and test results.
+See [current verification](docs/verification-0.2.0.md) and the
+[original DSP measurements](docs/verification.md) for test results.
 
 Dry, transformation bypass, and global bypass retain that same latency. Hardware
 conversion, device buffers, audio-server routing, and other DAW effects add
@@ -160,6 +227,21 @@ NaN/Inf recovery, gain bounds, reported versus measured DSP latency, and common
 44.1/48 kHz rates with 64/128/256-sample buffers. The DSP executable additionally
 reports synthetic-vowel pitch/envelope measurements and callback timing.
 
+The processor tests also cover factory presets, host change notifications, complete
+preset-file recall, corrupt-file rejection without partial changes, stereo/pre-clamp
+meter accuracy, meter reset, and processing with zero C++ heap calls.
+
+The editor smoke tool opens **no audio devices**. Run it from a graphical session
+to exercise resizing, parameter attachments, preset selection, bypass, and repeated
+editor reopening, and to save PNG renders of the actual editor:
+
+```bash
+./build/TheyThemEditorTests "$PWD/build/qa"
+```
+
+To include that graphical check in CTest, configure with
+`-DTHEY_THEM_TEST_EDITOR=ON`. Leave it off for headless build jobs without a display.
+
 - The analysis history spans 92.9 ms at 44.1 kHz / 85.3 ms at 48 kHz even though
   output peak delay is much shorter. Transients can smear; breathy/noisy input,
   consonants, and extreme shifts need listening tests.
@@ -174,10 +256,10 @@ reports synthetic-vowel pitch/envelope measurements and callback timing.
 - Large boosts can hit the sample clamp and audibly distort; reduce input/output
   gain if necessary. A hot microphone preamp can clip before the plugin receives
   any samples.
-- Only Linux is exercised in this pass. No installers, preset manager, other
+- Only Linux is exercised in this pass. No installers, other
   plugin formats, or custom Linux audio backend are included.
 - Saved parameters are supported through normal host/JUCE state handling.
-- See [verification](docs/verification.md) for exactly what was exercised and
+- See [verification](docs/verification-0.2.0.md) for exactly what was exercised and
   what still requires a person with a microphone and headphones.
 
 ## Licenses

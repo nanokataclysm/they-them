@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include "Metering.h"
 
 namespace theythem
 {
@@ -34,6 +35,8 @@ public:
                  const Parameters&) noexcept;
     int latencySamples() const noexcept;
     double sampleRate() const noexcept;
+    // Audio/lifecycle thread only; the processor publishes this through MeterBridge.
+    MeterReadings meterReadings() const noexcept;
     static Parameters sanitise(Parameters) noexcept;
 
 private:

@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
+#include "AllocationProbe.h"
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace
@@ -74,6 +76,166 @@ void parametersAndState()
     state = restored.currentParameters();
     check (near (state.pitchSemitones, 4.25) && near (state.formantSemitones, 12)
            && near (state.outputGainDb, 0), "Invalid state was not rejected/clamped");
+}
+
+void presetsAndFiles()
+{
+    Processor processor;
+    check (processor.matchingFactoryPreset() == 0, "Original default voice lost its factory preset");
+    set (processor, "input", -7.0f);
+    set (processor, "output", -13.0f);
+    set (processor, "bypass", 1.0f);
+    struct Listener final : juce::AudioProcessorParameter::Listener
+    {
+        int changes = 0, gestures = 0;
+        void parameterValueChanged (int, float) override { ++changes; }
+        void parameterGestureChanged (int, bool) override { ++gestures; }
+    } listener;
+    auto* pitchParameter = processor.parameterState().getParameter ("pitch");
+    pitchParameter->addListener (&listener);
+    for (size_t i = 0; i < theythem::factoryPresets.size(); ++i)
+    {
+        processor.loadFactoryPreset (static_cast<int> (i));
+        const auto p = processor.currentParameters();
+        check (processor.matchingFactoryPreset() == static_cast<int> (i), "Factory preset was not recognised");
+        check (near (p.inputGainDb, -7) && near (p.outputGainDb, -13) && p.bypassed,
+               "Factory preset changed monitoring trims or bypass");
+    }
+    check (listener.changes >= 6 && listener.gestures == 16, "Factory presets did not notify host parameter listeners");
+    pitchParameter->removeListener (&listener);
+    set (processor, "pitch", 2.25f);
+    check (processor.matchingFactoryPreset() == -1, "Edited voice was labelled as an unchanged factory preset");
+    processor.loadFactoryPreset (-1);
+    processor.loadFactoryPreset (999);
+    check (near (processor.currentParameters().pitchSemitones, 2.25), "Invalid factory index changed settings");
+
+    juce::TemporaryFile temporary (".ttvoice");
+    const auto file = temporary.getFile();
+    check (processor.savePresetToFile (file).wasOk(), "Preset save failed");
+    const auto validText = file.loadFileAsString();
+    const auto before = processor.currentParameters();
+    Processor restored;
+    check (restored.loadPresetFromFile (file).wasOk(), "Preset load failed");
+    for (auto* parameter : processor.getParameters())
+    {
+        auto* identified = dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter);
+        check (identified != nullptr, "Unexpected anonymous parameter");
+        const auto id = identified->paramID;
+        check (near (parameter->getValue(), restored.parameterState().getParameter (id)->getValue()),
+               "Preset did not round-trip every parameter");
+    }
+    // A user preset includes trims and bypass, unlike factory browsing.
+    check (near (restored.currentParameters().inputGainDb, before.inputGainDb)
+           && restored.currentParameters().bypassed, "File preset omitted session controls");
+    juce::MemoryBlock restoredState;
+    restored.getStateInformation (restoredState);
+    const auto rejected = [&] (const juce::String& text)
+    {
+        check (file.replaceWithText (text), "Could not write invalid preset fixture");
+        check (restored.loadPresetFromFile (file).failed(), "Invalid preset accepted");
+        juce::MemoryBlock after;
+        restored.getStateInformation (after);
+        check (after == restoredState, "Rejected preset partially modified parameters");
+    };
+    rejected ("not a preset");
+    rejected (validText.substring (0, validText.length() / 2));
+    rejected (validText.replace ("presetVersion=\"1\"", "presetVersion=\"999\""));
+    rejected (validText.replace ("presetVersion=\"1\"", "presetVersion=\"1garbage\""));
+    rejected (validText.replace ("TheyThemParameters", "OtherPlugin"));
+    for (const auto* invalid : { "nan", "inf", "garbage", "99", "" })
+    {
+        auto tree = juce::ValueTree::fromXml (*juce::parseXML (validText));
+        tree.getChildWithProperty ("id", "pitch").setProperty ("value", invalid, nullptr);
+        rejected (tree.createXml()->toString());
+    }
+    auto incomplete = juce::ValueTree::fromXml (*juce::parseXML (validText));
+    incomplete.removeChild (incomplete.getChildWithProperty ("id", "output"), nullptr);
+    rejected (incomplete.createXml()->toString());
+    auto duplicate = juce::ValueTree::fromXml (*juce::parseXML (validText));
+    duplicate.getChildWithProperty ("id", "output").setProperty ("id", "input", nullptr);
+    rejected (duplicate.createXml()->toString());
+    auto fractionalBool = juce::ValueTree::fromXml (*juce::parseXML (validText));
+    fractionalBool.getChildWithProperty ("id", "bypass").setProperty ("value", 0.25f, nullptr);
+    rejected (fractionalBool.createXml()->toString());
+    rejected (juce::String::repeatedString ("x", 1024 * 1024 + 1));
+    check (restored.loadPresetFromFile (file.getSiblingFile ("missing-they-them-preset.ttvoice")).failed(),
+           "Missing preset file reported success");
+    // Saving over an existing file is also a complete round-trip.
+    check (processor.savePresetToFile (file).wasOk() && restored.loadPresetFromFile (file).wasOk(),
+           "Replacing an existing preset failed");
+    const auto savedContents = file.loadFileAsString();
+    check (processor.savePresetToFile (file.getChildFile ("unwritable.ttvoice")).failed(),
+           "Saving to an invalid destination reported success");
+    check (file.loadFileAsString() == savedContents, "Failed save damaged the existing preset");
+    std::cout << "Factory presets, host notifications, file round-trip, and invalid-file rejection passed.\n";
+}
+
+void meterContract()
+{
+    theythem::MeterBridge bridge;
+    theythem::MeterReadings transient;
+    transient.input = { 0.8f, 0.2f };
+    transient.output = { 1.3f, 0.1f };
+    transient.gainReductionDb = 6.0f;
+    bridge.push (transient);
+    bridge.push ({});
+    const auto peak = bridge.take();
+    check (near (peak.input[0], 0.8) && near (peak.output[0], 1.3) && near (peak.gainReductionDb, 6),
+           "Short peaks were lost between meter refreshes");
+    check (peak.hasAudio && ! bridge.take().hasAudio && near (bridge.take().output[0], 0),
+           "Meter reads did not drain stale peaks/activity");
+
+    Processor processor;
+    set (processor, "input", 6.0206f);
+    set (processor, "transform", 0);
+    set (processor, "highPass", 0);
+    set (processor, "compressor", 0);
+    processor.prepareToPlay (48000, 128);
+    juce::AudioBuffer<float> buffer (2, 128);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 20; ++block)
+    {
+        for (int sample = 0; sample < 128; ++sample)
+        {
+            buffer.setSample (0, sample, 0.6f);
+            buffer.setSample (1, sample, 0.25f);
+        }
+        {
+            allocationProbe::Scope scope;
+            processor.processBlock (buffer, midi);
+        }
+        check (allocationProbe::allocations == 0 && allocationProbe::deallocations == 0,
+               "Processor metering allocated/deallocated on the audio thread");
+    }
+    const auto reading = processor.takeMeterReadings();
+    check (near (reading.input[0], 1.2) && near (reading.input[1], 0.5), "Input meters did not follow trim/stereo routing");
+    check (near (reading.output[0], 1.2) && near (reading.output[1], 0.5), "Meters missed pre-clamp output overload");
+    check (near (buffer.getMagnitude (0, 0, 128), 1) && near (reading.gainReductionDb, 0),
+           "Metering changed the sample clamp or disabled compression");
+    processor.reset();
+    check (! processor.takeMeterReadings().hasAudio, "Reset retained old meter data");
+    buffer.clear();
+    buffer.setSample (0, 0, std::numeric_limits<float>::quiet_NaN());
+    buffer.setSample (1, 0, std::numeric_limits<float>::infinity());
+    processor.processBlock (buffer, midi);
+    const auto invalid = processor.takeMeterReadings();
+    check (near (invalid.input[0], 0) && near (invalid.input[1], 0)
+           && std::isfinite (invalid.output[0]), "Invalid input poisoned meter data");
+    set (processor, "compressor", 1);
+    processor.reset();
+    for (int block = 0; block < 80; ++block)
+    {
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < 128; ++sample)
+                buffer.setSample (channel, sample, 0.4f);
+        processor.processBlock (buffer, midi);
+    }
+    check (processor.takeMeterReadings().gainReductionDb > 7.0f, "Compression meter failed to show attenuation");
+    processor.reset();
+    processor.processBlockBypassed (buffer, midi);
+    const auto bypass = processor.takeMeterReadings();
+    check (bypass.bypassed && near (bypass.gainReductionDb, 0), "Meter/status data ignored host bypass");
+    std::cout << "Pre-clamp stereo meters, peak hold, compression, bypass, reset, and callback allocation checks passed.\n";
 }
 
 void audioContract (double rate, int block)
@@ -201,6 +363,8 @@ int main()
     try
     {
         parametersAndState();
+        presetsAndFiles();
+        meterContract();
         for (double rate : { 44100.0, 48000.0 })
         {
             for (int block : { 64, 128, 256 })

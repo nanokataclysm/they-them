@@ -1,6 +1,6 @@
 # MVP verification — 2026-09-14
 
-Project root: `/home/nanokat/dev/they-them`. This record distinguishes executable
+Project root: `they-them`. This record distinguishes executable
 and numerical checks from a microphone/headphone listening session.
 
 ## Build environment

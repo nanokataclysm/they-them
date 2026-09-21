@@ -49,5 +49,5 @@ JUCE's complete third-party inventory is `JUCE.spdx.json` there.
 
 Distribution must comply with the chosen JUCE license and all applicable
 notices. The permissive DSP license does not make the combined plugin MIT.
-This MVP does not assign a distribution license to the project's original code
-or grant a commercial JUCE license.
+This project is licensed under AGPLv3 for open-source distribution in compliance
+with JUCE licensing terms.

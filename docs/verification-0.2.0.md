@@ -1,6 +1,6 @@
 # Version 0.2.0 verification — 2026-09-15
 
-Project: `/home/nanokat/dev/they-them`. This pass adds the editor, factory/file
+Project: `they-them`. This pass adds the editor, factory/file
 presets, and meters. The pitch/formant algorithm, parameter IDs/ranges/defaults,
 bus layouts, bypass behavior, and reported latency are preserved.
 

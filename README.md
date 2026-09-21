@@ -264,9 +264,8 @@ To include that graphical check in CTest, configure with
 
 ## Licenses
 
-stftPitchShift 2.0 is **MIT**; its notice
-and exact revision are in [ThirdParty/README.md](ThirdParty/README.md).
-JUCE 9.0.2 is **AGPLv3 or commercial**, not permissively licensed. The included
-Steinberg VST3 SDK is **MIT**. Do not assume that the MIT DSP dependency license
-makes the combined plugin MIT: distribution must comply with the selected JUCE
-license. This MVP does not assign a distribution license to the original code.
+This project is licensed under the **GNU Affero General Public License v3.0** (AGPLv3); see [LICENSE](LICENSE).
+
+- **stftPitchShift 2.0** is **MIT**; its notice and exact revision are in [ThirdParty/README.md](ThirdParty/README.md).
+- **JUCE 9.0.2** is **AGPLv3 or commercial**, not permissively licensed.
+- The included **Steinberg VST3 SDK** is **MIT**.
